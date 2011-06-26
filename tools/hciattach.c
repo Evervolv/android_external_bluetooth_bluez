@@ -653,6 +653,109 @@ static int csr(int fd, struct uart_t *u, struct termios *ti)
 }
 
 /*
+ * CSR specific initialization extension for Audio(PCM) Interface Configuration
+ * of ROM based Chips. This function helps in configuring PCM interface
+ * according to requirement of different platforms.
+ * Anantha Idapalapati <aidapalapati@nvidia.com>
+ */
+static int csr_tegra(int fd, struct uart_t *u, struct termios *ti)
+{
+        uint8_t bccmd_payload[30], bccmd_header[10];
+        uint16_t payload_length=14;
+        uint16_t varid=0x5031;
+        int16_t command = 0x2;
+        int16_t seqnum=0;
+        uint16_t portid=1;
+        uint16_t syncport=0;
+        uint16_t iotype=5; // 5-I2S Master; 8-I2S Slave.
+        uint32_t readrate=8000;
+        uint32_t writerate=8000;
+        uint16_t size=0;
+        int  clen = 0;
+        uint8_t cp[254], resp[254];
+
+        // First, Do Link Establishment with CSR BC6 Chip
+        bcsp(fd, u, ti);
+
+        /* There is some configuration (like PCM interface configuration,
+        *  which user may need to be done after WARM_RESET of chip. WARM_RESET
+        *  is done as part of initialization. Do the configuration required
+        *  for runtime as part of this function.
+        */
+        //  CSR BCCMD Command Structure
+        //   =============================================================
+        //  |  Type  | Lenght | Seq. No | Var ID | Status | Payload       |
+        //   =============================================================
+        //  sample BCCMD packet for audio interface configuration
+        //  uint8_t cp[] = { 0xc0, 0xdb, 0xdc, 0x82, 0x1, 0xbc,
+        //      0x2, 0x0, 0xc, 0x0, 0x0, 0x0, 0x31, 0x50, 0x0, 0x0,
+        //      0x1, 0x0, 0x0, 0x0, 0x5, 0x0, 0x40, 0x1f, 0x0, 0x0,
+        //      0x40, 0x1f, 0x0, 0x0, 0x2d, 0xf2, 0xc0 };
+
+        // Payload format
+        memset(bccmd_payload, 0, sizeof(bccmd_payload));
+        bccmd_payload[0] = portid & 0xff;
+        bccmd_payload[1] = (portid & 0xff00) >> 8 ;
+        bccmd_payload[2] = syncport & 0xff;
+        bccmd_payload[3] = (syncport & 0xff00) >> 8 ;
+        bccmd_payload[4] = iotype & 0xff;
+        bccmd_payload[5] = (iotype  & 0xff00) >> 8;
+        bccmd_payload[6] = readrate & 0xff;
+        bccmd_payload[7] = (readrate & 0xff00) >> 8;
+        bccmd_payload[8] = (readrate & 0xff0000) >> 16;
+        bccmd_payload[9] = readrate >> 24;
+        bccmd_payload[10] = writerate & 0xff;
+        bccmd_payload[11] = (writerate & 0xff00) >> 8;
+        bccmd_payload[12] = (writerate & 0xff0000) >> 16;
+        bccmd_payload[13] = writerate >> 24;
+
+        // CSR BCC Header Formation
+        size = (payload_length < 8) ? 9 : ((payload_length + 1) / 2) + 5;
+        bccmd_header[0] = command & 0xff;
+        bccmd_header[1] = command >> 8;
+        bccmd_header[2] = size & 0xff;
+        bccmd_header[3] = size >> 8;
+        bccmd_header[4] = seqnum & 0xff;
+        bccmd_header[5] = seqnum >> 8;
+        bccmd_header[6] = varid & 0xff;
+        bccmd_header[7] = varid >> 8;
+        bccmd_header[8] = 0x00;
+        bccmd_header[9] = 0x00;
+        seqnum++; // needs to increment to be used in next
+
+        // BCSP Packet Formation
+        memset(cp, 0, sizeof(cp));
+        cp[0] = 0xC0;
+        cp[1] = 0xdb;
+        cp[2] = 0xdc;
+        cp[3] = 0x82;
+        cp[4] = 0x1;
+        cp[5] = 0xbc;
+        memcpy(cp + 6, bccmd_header, sizeof(bccmd_header));
+        memcpy(cp + 16, bccmd_payload, payload_length);
+        cp[16 + payload_length ] = 0x2d;
+        cp[16 + payload_length + 1] = 0xf2;
+        cp[16 + payload_length + 2] = 0xC0;
+        clen = 33;
+
+        // Send the Audio Config Command
+        memset(resp, 0, sizeof(resp));
+        if (write(fd, cp, clen) != clen) {
+                perror("Failed to write command (SET_BCCMD AUDIO_CONFIG)");
+                return -1;
+        }
+
+        /* Read command response */
+        if (read_hci_event(fd, resp, 100) < 0) {
+                perror("Failed to read response (SET_BCCMD AUDIO_CONFIG)");
+                return -1;
+        }
+
+        return 0;
+}
+
+
+/*
  * Silicon Wave specific initialization
  * Thomas Moser <thomas.moser@tmoser.ch>
  */
@@ -1009,6 +1112,7 @@ struct uart_t uart[] = {
 	{ "digi",       0x0000, 0x0000, HCI_UART_H4,   9600,   115200, FLOW_CTL, NULL, digi     },
 
 	{ "bcsp",       0x0000, 0x0000, HCI_UART_BCSP, 115200, 115200, 0,        NULL, bcsp     },
+        { "csr_tegra",  0x0000, 0x0000, HCI_UART_BCSP, 115200, 115200, 0,        NULL, csr_tegra },
 
 	/* Xircom PCMCIA cards: Credit Card Adapter and Real Port Adapter */
 	{ "xircom",     0x0105, 0x080a, HCI_UART_H4,   115200, 115200, FLOW_CTL, NULL, NULL     },
